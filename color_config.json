@@ -1,0 +1,35 @@
+{
+  "colors_rgb": {
+    "red": [
+      254,
+      148,
+      162
+    ],
+    "green": [
+      140,
+      208,
+      149
+    ],
+    "blue": [
+      91,
+      190,
+      235
+    ]
+  },
+  "hsv_tolerance": {
+    "h_tol": 8,
+    "s_tol": 70,
+    "v_tol": 36
+  },
+  "robot_ip": "192.168.1.23",
+  "robot_pw": "5613",
+  "container_pos": [
+    147,
+    595
+  ],
+  "container_margin": 127,
+  "marker_min_dist": -124,
+  "marker_max_dist": 326,
+  "pickup_distance": 161,
+  "pickup_range": 10
+}
