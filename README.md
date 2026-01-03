@@ -1,4 +1,5 @@
 # 🤖 Robot IoT - Color Block Sorting
+demo: https://www.youtube.com/shorts/wrMpPdJhloQ
 
 Dự án Robot IoT tự động nhận diện và phân loại các khối màu sử dụng Computer Vision (YOLO / OpenCV) và điều khiển robot qua WiFi.
 
@@ -24,7 +25,7 @@ Dự án Robot IoT tự động nhận diện và phân loại các khối màu 
 
 Robot có khả năng:
 1. **Tự nhận diện vị trí** thông qua 2 marker màu (đỏ + xanh dương) gắn trên thân
-2. **Phát hiện khối màu xanh lá (green)** cần thu gom
+2. **Phát hiện khối màu xanh lá (green) và màu vàng (yellow)** cần thu gom
 3. **Tự động di chuyển** đến vị trí khối màu, gắp và đưa về **BIN** (thùng chứa)
 4. **Điều khiển từ xa** qua giao diện web hoặc phím tắt
 
