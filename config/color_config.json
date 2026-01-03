@@ -1,0 +1,47 @@
+{
+  "colors_rgb": {
+    "red": [
+      245,
+      164,
+      194
+    ],
+    "green": [
+      84,
+      174,
+      125
+    ],
+    "blue": [
+      26,
+      149,
+      241
+    ],
+    "yellow": [
+      220,
+      200,
+      1
+    ]
+  },
+  "hsv_tolerance": {
+    "h_tol": 4,
+    "s_tol": 119,
+    "v_tol": 72
+  },
+  "robot_ip": "192.168.1.14",
+  "robot_pw": "5613",
+  "green_bin_pos": [
+    153,
+    565
+  ],
+  "green_bin_margin": 137,
+  "yellow_bin_pos": [
+    171,
+    247
+  ],
+  "yellow_bin_margin": 146,
+  "marker_min_dist": -23309,
+  "marker_max_dist": 23551,
+  "pickup_distance": 182,
+  "pickup_range": 10,
+  "drop_distance": 141,
+  "drop_angle": 28
+}

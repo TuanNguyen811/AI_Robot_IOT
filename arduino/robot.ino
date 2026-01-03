@@ -19,12 +19,13 @@ Servo bow;      // D3 = GPIO0  → cúi người (servo góc)
 Servo gripper;  // D4 = GPIO2  → tay kẹp (servo góc)
 
 // Tham số bánh (360°)
-const int STOP_L = 90;  // trung tính bánh trái
+const int STOP_L = 87;  // trung tính bánh trái
 const int STOP_R = 90;  // trung tính bánh phải
-int FWD_L = 20;         // lệch khi tiến (trái)
-int FWD_R = 10;         // lệch khi tiến (phải)
-int BACK_L = 14;        // lệch khi lùi  (trái)
-int BACK_R = 20;        // lệch khi lùi  (phải)
+//tăng để
+int FWD_L = 18;         // lệch trái khi tiến ()
+int FWD_R = 14;         // lệch phải khi tiến (phải)
+int BACK_L = 14;        // lệch trái khi lùi  ()
+int BACK_R = 17;        // lệch phải khi lùi  ()
 
 // Tham số cúi & kẹp
 const int BOW_UP = 97;     // đứng thẳng

@@ -16,12 +16,20 @@ import threading
 import json
 import os
 import logging
+from pathlib import Path
 
 # Tắt Flask request logging để giảm spam console
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-app = Flask(__name__)
+BASE_DIR = Path(__file__).resolve().parent
+WEB_DIR = BASE_DIR / "web"
+
+app = Flask(
+    __name__,
+    template_folder=str(WEB_DIR / "templates"),
+    static_folder=str(WEB_DIR / "static"),
+)
 
 # ================== ROBOT CONFIG ==================
 ROBOT_IP = "192.168.1.23"
@@ -29,9 +37,23 @@ ROBOT_PW = "5613"
 ROBOT_ENABLED = True
 HEARTBEAT_INTERVAL = 10.0
 
-# ================== CONTAINER/BIN POSITION ==================
-CONTAINER_POS = (200, 360)
-CONTAINER_MARGIN = 120
+# ================== DUAL BIN CONFIGURATION ==================
+# Hệ thống 2 BIN: GREEN_BIN cho khối green, YELLOW_BIN cho khối yellow
+
+# GREEN BIN - vị trí và kích thước
+GREEN_BIN_POS = None       # (x, y) - None = chưa cấu hình
+GREEN_BIN_MARGIN = 100     # Bán kính mặc định
+
+# YELLOW BIN - vị trí và kích thước  
+YELLOW_BIN_POS = None      # (x, y) - None = chưa cấu hình
+YELLOW_BIN_MARGIN = 100    # Bán kính mặc định
+
+# Fallback position nếu BIN chưa được cấu hình
+DEFAULT_BIN_POS = (200, 360)
+DEFAULT_BIN_MARGIN = 120
+
+# Robot đang gắp màu gì? (None = không gắp, "green" hoặc "yellow")
+CARRYING_COLOR = None
 
 # ================== MARKER DISTANCE CONFIG ==================
 # Khoảng cách tối thiểu giữa red và blue marker (pixel)
@@ -46,8 +68,14 @@ MARKER_MAX_DIST = 600
 PICKUP_DISTANCE = 80
 PICKUP_RANGE = 10  # Dung sai ± cho pickup distance
 
+# ================== DROP DISTANCE CONFIG ==================
+# Khoảng cách từ robot đến tâm BIN để được thả (pixel)
+DROP_DISTANCE = 100
+# Góc tối đa giữa hướng robot và hướng tới BIN (độ)
+DROP_ANGLE = 30
+
 # ================== ROBOT STATE ==================
-ROBOT_STATE = "SEEKING_GREEN"
+ROBOT_STATE = "SEEKING_TARGET"  # Tìm target gần nhất (green hoặc yellow)
 
 # ================== CAMERA CONFIG ==================
 CAM_INDEX = 1       # Camera index
@@ -59,13 +87,14 @@ PROCESS_EVERY_N_FRAMES = 1  # Xử lý mỗi N frame (1 = tất cả, 2 = bỏ q
 
 # ================== COLOR CONFIG ==================
 # File lưu cấu hình màu
-COLOR_CONFIG_FILE = "color_config.json"
+COLOR_CONFIG_FILE = str(BASE_DIR / "config" / "color_config.json")
 
 # Cấu hình màu mặc định (RGB)
 DEFAULT_COLORS_RGB = {
     "red": (255, 80, 80),      # Đỏ
     "green": (80, 200, 80),    # Xanh lá
     "blue": (80, 150, 255),    # Xanh dương
+    "yellow": (255, 220, 80),  # Vàng - BIN container
 }
 
 # Dung sai HSV mặc định
@@ -83,6 +112,7 @@ BOX_COLORS = {
     "red": (0, 0, 255),
     "green": (0, 255, 0),
     "blue": (255, 200, 0),
+    "yellow": (0, 255, 255),  # Yellow BIN
 }
 
 # Morphology kernel
@@ -97,16 +127,20 @@ _frame_lock = threading.Lock()
 _command_queue = []  # Queue lệnh gửi robot (non-blocking)
 _command_lock = threading.Lock()
 _detection_info = {
-    "state": "SEEKING_GREEN",
+    "state": "SEEKING_TARGET",
     "command": "STOP",
     "robot_enabled": True,
     "markers_ok": False,
-    "green_detected": False,
+    "target_detected": False,
+    "target_color": None,      # Màu của target đang nhắm (green/yellow)
+    "carrying_color": None,    # Màu đang gắp (green/yellow/None)
     "robot_pos": None,
     "detections": [],
     "marker_dist": 0,
     "marker_dist_ok": False,
     "fps": 0,
+    "green_count": 0,          # Số green ngoài BIN
+    "yellow_count": 0,         # Số yellow ngoài BIN
 }
 
 # Color configuration (sẽ được load từ file hoặc dùng default)
@@ -155,26 +189,36 @@ def centroid(contour):
 def load_color_config():
     """Load TẤT CẢ cấu hình từ file."""
     global colors_rgb, colors_hsv, hsv_tolerance
-    global ROBOT_IP, ROBOT_PW, CONTAINER_POS, CONTAINER_MARGIN
+    global ROBOT_IP, ROBOT_PW
+    global GREEN_BIN_POS, GREEN_BIN_MARGIN, YELLOW_BIN_POS, YELLOW_BIN_MARGIN
     global MARKER_MIN_DIST, MARKER_MAX_DIST, PICKUP_DISTANCE, PICKUP_RANGE
+    global DROP_DISTANCE, DROP_ANGLE
     
     if os.path.exists(COLOR_CONFIG_FILE):
         try:
             with open(COLOR_CONFIG_FILE, 'r') as f:
                 config = json.load(f)
                 
-                # Color config
-                colors_rgb = {k: tuple(v) for k, v in config.get('colors_rgb', DEFAULT_COLORS_RGB).items()}
+                # Color config - merge with defaults to ensure all colors exist
+                loaded_colors = config.get('colors_rgb', {})
+                colors_rgb = DEFAULT_COLORS_RGB.copy()
+                for k, v in loaded_colors.items():
+                    colors_rgb[k] = tuple(v)
                 hsv_tolerance = config.get('hsv_tolerance', DEFAULT_HSV_TOLERANCE)
                 
                 # Robot config
                 ROBOT_IP = config.get('robot_ip', ROBOT_IP)
                 ROBOT_PW = config.get('robot_pw', ROBOT_PW)
                 
-                # Container/BIN config
-                container = config.get('container_pos', list(CONTAINER_POS))
-                CONTAINER_POS = tuple(container) if isinstance(container, list) else CONTAINER_POS
-                CONTAINER_MARGIN = config.get('container_margin', CONTAINER_MARGIN)
+                # GREEN BIN config
+                green_bin = config.get('green_bin_pos', None)
+                GREEN_BIN_POS = tuple(green_bin) if green_bin else None
+                GREEN_BIN_MARGIN = config.get('green_bin_margin', GREEN_BIN_MARGIN)
+                
+                # YELLOW BIN config
+                yellow_bin = config.get('yellow_bin_pos', None)
+                YELLOW_BIN_POS = tuple(yellow_bin) if yellow_bin else None
+                YELLOW_BIN_MARGIN = config.get('yellow_bin_margin', YELLOW_BIN_MARGIN)
                 
                 # Marker distance config
                 MARKER_MIN_DIST = config.get('marker_min_dist', MARKER_MIN_DIST)
@@ -183,6 +227,10 @@ def load_color_config():
                 # Pickup distance config
                 PICKUP_DISTANCE = config.get('pickup_distance', PICKUP_DISTANCE)
                 PICKUP_RANGE = config.get('pickup_range', PICKUP_RANGE)
+                
+                # Drop distance config
+                DROP_DISTANCE = config.get('drop_distance', DROP_DISTANCE)
+                DROP_ANGLE = config.get('drop_angle', DROP_ANGLE)
                 
                 print(f"[INFO] Loaded all config from {COLOR_CONFIG_FILE}")
         except Exception as e:
@@ -197,7 +245,9 @@ def load_color_config():
     # Chuyển sang HSV
     colors_hsv = {name: rgb_to_hsv_opencv(*rgb) for name, rgb in colors_rgb.items()}
     print(f"[INFO] Colors RGB: {colors_rgb}")
-    print(f"[INFO] Robot IP: {ROBOT_IP}, Container: {CONTAINER_POS}, Margin: {CONTAINER_MARGIN}")
+    print(f"[INFO] Robot IP: {ROBOT_IP}")
+    print(f"[INFO] GREEN BIN: {GREEN_BIN_POS}, margin={GREEN_BIN_MARGIN}")
+    print(f"[INFO] YELLOW BIN: {YELLOW_BIN_POS}, margin={YELLOW_BIN_MARGIN}")
     print(f"[INFO] Marker dist: {MARKER_MIN_DIST}-{MARKER_MAX_DIST}, Pickup: {PICKUP_DISTANCE}")
 
 def save_color_config():
@@ -205,18 +255,22 @@ def save_color_config():
     save_all_config()
 
 def save_all_config():
-    """Lưu TẤT CẢ cấu hình ra file (màu + measure tools + robot config)."""
+    """Lưu TẤT CẢ cấu hình ra file (màu + measure tools + robot config + dual BIN)."""
     config = {
         'colors_rgb': {k: list(v) for k, v in colors_rgb.items()},
         'hsv_tolerance': hsv_tolerance,
         'robot_ip': ROBOT_IP,
         'robot_pw': ROBOT_PW,
-        'container_pos': list(CONTAINER_POS),
-        'container_margin': CONTAINER_MARGIN,
+        'green_bin_pos': list(GREEN_BIN_POS) if GREEN_BIN_POS else None,
+        'green_bin_margin': GREEN_BIN_MARGIN,
+        'yellow_bin_pos': list(YELLOW_BIN_POS) if YELLOW_BIN_POS else None,
+        'yellow_bin_margin': YELLOW_BIN_MARGIN,
         'marker_min_dist': MARKER_MIN_DIST,
         'marker_max_dist': MARKER_MAX_DIST,
         'pickup_distance': PICKUP_DISTANCE,
         'pickup_range': PICKUP_RANGE,
+        'drop_distance': DROP_DISTANCE,
+        'drop_angle': DROP_ANGLE,
     }
     try:
         with open(COLOR_CONFIG_FILE, 'w') as f:
@@ -256,6 +310,8 @@ _pending_command = None    # Lệnh đang chờ gửi (chỉ giữ lệnh mới 
 _is_sending = False        # Đang có request đang gửi?
 _send_lock = threading.Lock()  # Lock để tránh race condition
 _combo_start_time = 0      # Thời điểm bắt đầu combo (để đợi)
+_backup_start_time = 0     # Thời điểm bắt đầu lùi (sau khi drop)
+BACKUP_DURATION = 1.0      # Thời gian lùi sau khi drop (giây)
 
 # HTTP Session với Keep-Alive (giảm overhead tạo connection mới)
 _http_session = None
@@ -441,10 +497,35 @@ def send_manual_command(cmd):
     return True
 
 # ================== HELPER FUNCTIONS ==================
-def is_in_container_zone(cx, cy):
-    """Kiểm tra tọa độ có nằm trong vùng container không."""
-    dist = math.hypot(cx - CONTAINER_POS[0], cy - CONTAINER_POS[1])
-    return dist <= CONTAINER_MARGIN
+def is_in_bin_zone(cx, cy, bin_color):
+    """Kiểm tra tọa độ có nằm trong vùng BIN của màu chỉ định không.
+    bin_color: "green" hoặc "yellow"
+    """
+    if bin_color == "green":
+        bin_pos = GREEN_BIN_POS if GREEN_BIN_POS else DEFAULT_BIN_POS
+        bin_margin = GREEN_BIN_MARGIN
+    elif bin_color == "yellow":
+        bin_pos = YELLOW_BIN_POS if YELLOW_BIN_POS else DEFAULT_BIN_POS
+        bin_margin = YELLOW_BIN_MARGIN
+    else:
+        return False
+    
+    dist = math.hypot(cx - bin_pos[0], cy - bin_pos[1])
+    return dist <= bin_margin
+
+def is_in_any_bin_zone(cx, cy):
+    """Kiểm tra tọa độ có nằm trong BẤT KỲ vùng BIN nào không."""
+    return is_in_bin_zone(cx, cy, "green") or is_in_bin_zone(cx, cy, "yellow")
+
+def get_bin_for_color(color_name):
+    """Lấy thông tin BIN cho màu chỉ định.
+    Returns: (bin_pos, bin_margin) hoặc (None, None) nếu chưa cấu hình
+    """
+    if color_name == "green":
+        return GREEN_BIN_POS, GREEN_BIN_MARGIN
+    elif color_name == "yellow":
+        return YELLOW_BIN_POS, YELLOW_BIN_MARGIN
+    return None, None
 
 def determine_orientation(blue_obj, red_obj, margin=25):
     """Xác định hướng từ 2 markers: blue (trái) và red (phải)."""
@@ -643,7 +724,7 @@ def detect_all_of_color(hsv_img, frame, color_name, kernel):
 
 # ================== VIDEO PROCESSING ==================
 def process_frame(frame):
-    global ROBOT_STATE, _detection_info, _combo_start_time
+    global ROBOT_STATE, CARRYING_COLOR, _detection_info, _combo_start_time, _backup_start_time
     
     # Xử lý lệnh pending (sau cooldown)
     process_pending_command()
@@ -653,12 +734,9 @@ def process_frame(frame):
     # Chuyển sang HSV
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # Phát hiện red và blue markers (chỉ cần 1)
+    # Phát hiện red và blue markers (robot position)
     top_red = detect_color(hsv, frame, "red", MORPH_KERNEL)
     top_blue = detect_color(hsv, frame, "blue", MORPH_KERNEL)
-    
-    # Phát hiện TẤT CẢ green objects
-    all_greens = detect_all_of_color(hsv, frame, "green", MORPH_KERNEL)
     
     # Tạo detections dict cho vẽ
     detections = {}
@@ -667,7 +745,7 @@ def process_frame(frame):
     if top_blue:
         detections["blue"] = top_blue
     
-    # Heading từ blue/red markers (cần tính trước để chọn green gần nhất)
+    # Heading từ blue/red markers
     heading_info = None
     marker_base_len = None
     orientation, blue_center, red_center = determine_orientation(top_blue, top_red)
@@ -687,42 +765,60 @@ def process_frame(frame):
             heading_info = ((mid_x, mid_y), (perp_x, perp_y))
             robot_pos = (mid_x, mid_y)
     
-    # Lọc green ngoài container zone và chọn GREEN GẦN NHẤT với robot
-    greens_outside = []
-    for g in all_greens:
-        if not is_in_container_zone(g["cx"], g["cy"]):
+    # ========== DUAL TARGET: PHÁT HIỆN GREEN VÀ YELLOW ==========
+    all_greens = detect_all_of_color(hsv, frame, "green", MORPH_KERNEL)
+    all_yellows = detect_all_of_color(hsv, frame, "yellow", MORPH_KERNEL)
+    
+    # Lọc targets ngoài BIN zones và tính khoảng cách
+    def filter_targets_outside_bins(targets, target_color):
+        """Lọc targets nằm ngoài BIN của màu đó."""
+        result = []
+        for t in targets:
+            # Không lấy target nằm trong BIN của chính nó
+            if is_in_bin_zone(t["cx"], t["cy"], target_color):
+                continue
             # Tính khoảng cách đến robot
             if robot_pos:
-                g["dist_to_robot"] = math.hypot(robot_pos[0] - g["cx"], robot_pos[1] - g["cy"])
+                t["dist_to_robot"] = math.hypot(robot_pos[0] - t["cx"], robot_pos[1] - t["cy"])
             else:
-                g["dist_to_robot"] = float('inf')
-            greens_outside.append(g)
+                t["dist_to_robot"] = float('inf')
+            t["target_color"] = target_color  # Gán màu cho target
+            result.append(t)
+        return result
     
-    # Sắp xếp theo khoảng cách tăng dần (gần nhất trước)
-    greens_outside.sort(key=lambda g: g["dist_to_robot"])
+    greens_outside = filter_targets_outside_bins(all_greens, "green")
+    yellows_outside = filter_targets_outside_bins(all_yellows, "yellow")
     
-    # Green gần nhất (target)
-    green_target = greens_outside[0] if greens_outside else None
+    # Gộp tất cả targets và sắp xếp theo khoảng cách (gần nhất trước)
+    all_targets = greens_outside + yellows_outside
+    all_targets.sort(key=lambda t: t["dist_to_robot"])
     
-    # Vẽ TẤT CẢ green objects
+    # Target gần nhất (có thể là green hoặc yellow)
+    nearest_target = all_targets[0] if all_targets else None
+    target_color = nearest_target["target_color"] if nearest_target else None
+    
+    green_count = len(greens_outside)
+    yellow_count = len(yellows_outside)
+    
+    # ========== VẼ TẤT CẢ GREEN OBJECTS ==========
     for i, g in enumerate(all_greens):
         x, y, w, h = g["bbox"]["x"], g["bbox"]["y"], g["bbox"]["w"], g["bbox"]["h"]
         cx, cy = g["cx"], g["cy"]
         
-        in_bin = is_in_container_zone(cx, cy)
-        is_target = (green_target and g["cx"] == green_target["cx"] and g["cy"] == green_target["cy"])
+        in_bin = is_in_bin_zone(cx, cy, "green")
+        is_target = (nearest_target and nearest_target.get("target_color") == "green" 
+                     and g["cx"] == nearest_target["cx"] and g["cy"] == nearest_target["cy"])
         
         if in_bin:
             label = "green(BIN)"
             box_color = (0, 100, 0)
         elif is_target:
-            label = "GREEN*"  # Đánh dấu target
+            label = "GREEN*"
             box_color = (0, 255, 0)
         else:
             label = f"green#{i+1}"
             box_color = (0, 200, 0)
         
-        # Vẽ khoảng cách nếu có robot_pos
         dist_text = ""
         if robot_pos and not in_bin:
             dist = math.hypot(robot_pos[0] - cx, robot_pos[1] - cy)
@@ -732,10 +828,39 @@ def process_frame(frame):
         cv2.drawMarker(frame, (cx, cy), box_color, cv2.MARKER_CROSS, 16, 2)
         cv2.putText(frame, f"{label}{dist_text}", (x, max(0, y - 8)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
-        
         detections[f"green_{i}"] = g
     
-    # Vẽ red và blue markers
+    # ========== VẼ TẤT CẢ YELLOW OBJECTS ==========
+    for i, y_obj in enumerate(all_yellows):
+        x, y, w, h = y_obj["bbox"]["x"], y_obj["bbox"]["y"], y_obj["bbox"]["w"], y_obj["bbox"]["h"]
+        cx, cy = y_obj["cx"], y_obj["cy"]
+        
+        in_bin = is_in_bin_zone(cx, cy, "yellow")
+        is_target = (nearest_target and nearest_target.get("target_color") == "yellow"
+                     and y_obj["cx"] == nearest_target["cx"] and y_obj["cy"] == nearest_target["cy"])
+        
+        if in_bin:
+            label = "yellow(BIN)"
+            box_color = (0, 150, 150)  # Màu tối hơn
+        elif is_target:
+            label = "YELLOW*"
+            box_color = (0, 255, 255)
+        else:
+            label = f"yellow#{i+1}"
+            box_color = (0, 200, 200)
+        
+        dist_text = ""
+        if robot_pos and not in_bin:
+            dist = math.hypot(robot_pos[0] - cx, robot_pos[1] - cy)
+            dist_text = f" d={dist:.0f}"
+        
+        cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, 3 if is_target else 2)
+        cv2.drawMarker(frame, (cx, cy), box_color, cv2.MARKER_CROSS, 16, 2)
+        cv2.putText(frame, f"{label}{dist_text}", (x, max(0, y - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+        detections[f"yellow_{i}"] = y_obj
+    
+    # ========== VẼ RED, BLUE MARKERS ==========
     for color_name in ["red", "blue"]:
         det = detections.get(color_name)
         if det:
@@ -747,12 +872,36 @@ def process_frame(frame):
             cv2.putText(frame, f"{color_name} ({cx},{cy})", (x, max(0, y - 8)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
     
-    # Vẽ container
-    cv2.circle(frame, CONTAINER_POS, CONTAINER_MARGIN, (255, 0, 255), 2)
-    cv2.putText(frame, "BIN", (CONTAINER_POS[0] - 20, CONTAINER_POS[1] - CONTAINER_MARGIN - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+    # ========== VẼ 2 BINs ==========
+    # GREEN BIN
+    if GREEN_BIN_POS:
+        cv2.circle(frame, GREEN_BIN_POS, GREEN_BIN_MARGIN, (0, 255, 0), 3)
+        cv2.drawMarker(frame, GREEN_BIN_POS, (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
+        cv2.putText(frame, f"GREEN BIN", 
+                    (GREEN_BIN_POS[0] - 50, GREEN_BIN_POS[1] - GREEN_BIN_MARGIN - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    else:
+        # Chưa cấu hình
+        pos = DEFAULT_BIN_POS
+        cv2.circle(frame, pos, 50, (0, 128, 0), 1)
+        cv2.putText(frame, "GREEN BIN (not set)", (pos[0] - 70, pos[1] - 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 128, 0), 1)
     
-    # Vẽ heading arrow
+    # YELLOW BIN
+    if YELLOW_BIN_POS:
+        cv2.circle(frame, YELLOW_BIN_POS, YELLOW_BIN_MARGIN, (0, 255, 255), 3)
+        cv2.drawMarker(frame, YELLOW_BIN_POS, (0, 255, 255), cv2.MARKER_CROSS, 20, 2)
+        cv2.putText(frame, f"YELLOW BIN", 
+                    (YELLOW_BIN_POS[0] - 60, YELLOW_BIN_POS[1] - YELLOW_BIN_MARGIN - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+    else:
+        # Chưa cấu hình
+        pos = (DEFAULT_BIN_POS[0] + 200, DEFAULT_BIN_POS[1])
+        cv2.circle(frame, pos, 50, (0, 128, 128), 1)
+        cv2.putText(frame, "YELLOW BIN (not set)", (pos[0] - 80, pos[1] - 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 128, 128), 1)
+    
+    # ========== VẼ HEADING ARROW ==========
     if blue_center and red_center and heading_info:
         cv2.line(frame, blue_center, red_center, (0, 255, 255), 3)
         origin, (perp_x, perp_y) = heading_info
@@ -760,102 +909,118 @@ def process_frame(frame):
         head_end = (int(origin[0] + perp_x * heading_len), int(origin[1] + perp_y * heading_len))
         cv2.arrowedLine(frame, origin, head_end, (255, 255, 0), 3, tipLength=0.2)
     
-    # State machine
-    dist_to_green = None
+    # ========== STATE MACHINE ==========
+    dist_to_target = None
     dist_to_bin = None
-    angle_to_bin = None  # Góc từ hướng robot đến tâm BIN
-    green_count = len(greens_outside)  # Số green còn lại ngoài BIN
+    angle_to_bin = None
+    current_bin_pos = None
     
-    if robot_pos:
-        dist_to_bin = math.hypot(robot_pos[0] - CONTAINER_POS[0], robot_pos[1] - CONTAINER_POS[1])
+    # Xác định BIN đích dựa trên màu đang gắp
+    if CARRYING_COLOR:
+        bin_pos, bin_margin = get_bin_for_color(CARRYING_COLOR)
+        if bin_pos:
+            current_bin_pos = bin_pos
+            if robot_pos:
+                dist_to_bin = math.hypot(robot_pos[0] - bin_pos[0], robot_pos[1] - bin_pos[1])
     
     move_cmd = "STOP"
     
-    if ROBOT_STATE == "SEEKING_GREEN":
-        if green_target:
-            green_pos = (green_target["cx"], green_target["cy"])
+    if ROBOT_STATE == "SEEKING_TARGET":
+        # Tìm target gần nhất (green hoặc yellow)
+        if nearest_target:
+            target_pos = (nearest_target["cx"], nearest_target["cy"])
             
-            # Tính khoảng cách từ robot đến green
             if robot_pos:
-                dist_to_green = math.hypot(robot_pos[0] - green_pos[0], robot_pos[1] - green_pos[1])
+                dist_to_target = math.hypot(robot_pos[0] - target_pos[0], robot_pos[1] - target_pos[1])
             
-            # Dùng PICKUP_DISTANCE: khi gần hơn hoặc bằng thì pick
-            if dist_to_green is not None and dist_to_green <= PICKUP_DISTANCE:
-                print(f"[STATE] SEEKING_GREEN -> PICKING (dist={dist_to_green:.0f}px <= {PICKUP_DISTANCE}px)")
+            if dist_to_target is not None and dist_to_target <= PICKUP_DISTANCE:
+                # Ghi nhớ màu đang gắp
+                CARRYING_COLOR = nearest_target["target_color"]
+                print(f"[STATE] SEEKING_TARGET -> PICKING ({CARRYING_COLOR}, dist={dist_to_target:.0f}px)")
                 ROBOT_STATE = "PICKING"
                 move_cmd = "STOP"
             else:
-                move_cmd = decide_move_to_target(green_pos, heading_info, W, H)
+                move_cmd = decide_move_to_target(target_pos, heading_info, W, H)
         else:
             move_cmd = "SEARCH_TARGET"
     
     elif ROBOT_STATE == "PICKING":
-        # Gửi COMBO_PICK và chờ hoàn thành
-        print("[STATE] PICKING -> WAIT_PICK (sending COMBO_PICK)")
+        print(f"[STATE] PICKING -> WAIT_PICK (sending COMBO_PICK, carrying={CARRYING_COLOR})")
         send_robot_command("COMBO_PICK", force=True)
         _combo_start_time = time.time()
         ROBOT_STATE = "WAIT_PICK"
         move_cmd = "STOP"
     
     elif ROBOT_STATE == "WAIT_PICK":
-        # Đợi combo pick hoàn thành theo thời gian thực
         elapsed = time.time() - _combo_start_time
-        
         if elapsed >= COMBO_WAIT_TIME:
-            print(f"[STATE] WAIT_PICK -> RETURNING (waited {elapsed:.1f}s)")
+            print(f"[STATE] WAIT_PICK -> RETURNING (waited {elapsed:.1f}s, carrying={CARRYING_COLOR})")
             ROBOT_STATE = "RETURNING"
         move_cmd = "STOP"
     
     elif ROBOT_STATE == "RETURNING":
-        # Tính góc từ hướng robot đến tâm BIN
+        # Đi đến BIN của màu đang gắp
         ready_to_drop = False
         
-        if robot_pos and heading_info and dist_to_bin is not None:
+        if current_bin_pos is None:
+            print(f"[ERROR] No BIN configured for {CARRYING_COLOR}! Resetting...")
+            CARRYING_COLOR = None
+            ROBOT_STATE = "SEEKING_TARGET"
+            move_cmd = "STOP"
+        elif robot_pos and heading_info and dist_to_bin is not None:
             origin, direction = heading_info
             dir_x, dir_y = direction
             
-            # Vector từ robot đến tâm BIN
-            vec_x = CONTAINER_POS[0] - robot_pos[0]
-            vec_y = CONTAINER_POS[1] - robot_pos[1]
+            vec_x = current_bin_pos[0] - robot_pos[0]
+            vec_y = current_bin_pos[1] - robot_pos[1]
             vec_len = dist_to_bin
             
             if vec_len > 1e-3:
                 vec_x /= vec_len
                 vec_y /= vec_len
                 
-                # Dot product để tính góc
                 dot = dir_x * vec_x + dir_y * vec_y
                 dot_clamped = max(-1.0, min(1.0, dot))
                 angle_to_bin = math.degrees(math.acos(dot_clamped))
                 
-                # Điều kiện nhả: khoảng cách đủ gần VÀ đang hướng vào tâm BIN (góc nhỏ)
-                ANGLE_THRESHOLD = 30.0  # Phải hướng vào tâm (góc < 30°)
-                if dist_to_bin <= PICKUP_DISTANCE and angle_to_bin <= ANGLE_THRESHOLD:
+                if dist_to_bin <= DROP_DISTANCE and angle_to_bin <= DROP_ANGLE:
                     ready_to_drop = True
-                    print(f"[STATE] RETURNING -> DROPPING (dist={dist_to_bin:.0f}px, angle={angle_to_bin:.0f}°)")
-        
-        if ready_to_drop:
-            ROBOT_STATE = "DROPPING"
-            move_cmd = "STOP"
+                    print(f"[STATE] RETURNING -> DROPPING (dist={dist_to_bin:.0f}px, angle={angle_to_bin:.0f}°, to {CARRYING_COLOR} BIN)")
+            
+            if ready_to_drop:
+                ROBOT_STATE = "DROPPING"
+                move_cmd = "STOP"
+            else:
+                move_cmd = decide_move_to_target(current_bin_pos, heading_info, W, H)
         else:
-            move_cmd = decide_move_to_target(CONTAINER_POS, heading_info, W, H)
+            move_cmd = decide_move_to_target(current_bin_pos, heading_info, W, H) if current_bin_pos else "STOP"
     
     elif ROBOT_STATE == "DROPPING":
-        # Gửi COMBO_DROP và chờ hoàn thành
-        print("[STATE] DROPPING -> WAIT_DROP (sending COMBO_DROP)")
+        print(f"[STATE] DROPPING -> WAIT_DROP (sending COMBO_DROP to {CARRYING_COLOR} BIN)")
         send_robot_command("COMBO_DROP", force=True)
         _combo_start_time = time.time()
         ROBOT_STATE = "WAIT_DROP"
         move_cmd = "STOP"
     
     elif ROBOT_STATE == "WAIT_DROP":
-        # Đợi combo drop hoàn thành theo thời gian thực
         elapsed = time.time() - _combo_start_time
-        
         if elapsed >= COMBO_WAIT_TIME:
-            print(f"[STATE] WAIT_DROP -> SEEKING_GREEN (waited {elapsed:.1f}s)")
-            ROBOT_STATE = "SEEKING_GREEN"
+            print(f"[STATE] WAIT_DROP -> BACKING_UP (waited {elapsed:.1f}s)")
+            ROBOT_STATE = "BACKING_UP"
+            _backup_start_time = time.time()
+            send_robot_command("MOVE_BACKWARD", force=True)
         move_cmd = "STOP"
+    
+    elif ROBOT_STATE == "BACKING_UP":
+        elapsed = time.time() - _backup_start_time
+        if elapsed >= BACKUP_DURATION:
+            print(f"[STATE] BACKING_UP -> SEEKING_TARGET (backed up {elapsed:.1f}s)")
+            send_robot_command("STOP", force=True)
+            CARRYING_COLOR = None  # Reset màu đang gắp
+            ROBOT_STATE = "SEEKING_TARGET"
+            move_cmd = "STOP"
+        else:
+            move_cmd = "MOVE_BACKWARD"
     
     # Safety: stop if missing markers or distance invalid
     marker_dist_ok = True
@@ -864,14 +1029,14 @@ def process_frame(frame):
         marker_dist_ok = False
     elif marker_base_len:
         if marker_base_len < MARKER_MIN_DIST:
-            move_cmd = "STOP"  # Quá gần = nhận diện sai
+            move_cmd = "STOP"
             marker_dist_ok = False
         elif marker_base_len > MARKER_MAX_DIST:
-            move_cmd = "STOP"  # Quá xa camera
+            move_cmd = "STOP"
             marker_dist_ok = False
     
-    # Send command - KHÔNG gửi khi đang đợi combo hoàn thành
-    if ROBOT_STATE not in ("WAIT_PICK", "WAIT_DROP"):
+    # Send command
+    if ROBOT_STATE not in ("WAIT_PICK", "WAIT_DROP", "BACKING_UP"):
         send_robot_command(move_cmd)
     
     # Update detection info
@@ -880,23 +1045,35 @@ def process_frame(frame):
         "command": move_cmd,
         "robot_enabled": ROBOT_ENABLED,
         "markers_ok": orientation == "LEFT_RIGHT_OK",
-        "green_detected": green_target is not None,
-        "green_count": green_count,  # Số green còn lại ngoài BIN
+        "target_detected": nearest_target is not None,
+        "target_color": target_color,
+        "carrying_color": CARRYING_COLOR,
+        "green_count": green_count,
+        "yellow_count": yellow_count,
         "robot_pos": robot_pos,
         "detections": [det for det in detections.values()],
         "marker_dist": round(marker_base_len, 1) if marker_base_len else 0,
         "marker_dist_ok": marker_dist_ok,
-        "dist_to_green": round(dist_to_green, 1) if dist_to_green else 0,
+        "dist_to_target": round(dist_to_target, 1) if dist_to_target else 0,
         "dist_to_bin": round(dist_to_bin, 1) if dist_to_bin else 0,
         "angle_to_bin": round(angle_to_bin, 1) if angle_to_bin else 0,
         "pickup_distance": PICKUP_DISTANCE,
+        "green_bin_pos": GREEN_BIN_POS,
+        "green_bin_margin": GREEN_BIN_MARGIN,
+        "yellow_bin_pos": YELLOW_BIN_POS,
+        "yellow_bin_margin": YELLOW_BIN_MARGIN,
     })
     
     # Draw status
     status_color = (0, 255, 0) if ROBOT_ENABLED else (0, 0, 255)
     enabled_text = "ON" if ROBOT_ENABLED else "OFF"
-    cv2.putText(frame, f"STATE: {ROBOT_STATE} | CMD: {move_cmd} | SEND: {enabled_text}",
+    carrying_text = f" | CARRYING: {CARRYING_COLOR}" if CARRYING_COLOR else ""
+    cv2.putText(frame, f"STATE: {ROBOT_STATE} | CMD: {move_cmd} | SEND: {enabled_text}{carrying_text}",
                 (10, H - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+    
+    # Draw counts
+    cv2.putText(frame, f"Targets: GREEN={green_count} YELLOW={yellow_count}",
+                (10, H - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
     
     # Draw color info
     y_offset = 30
@@ -988,14 +1165,111 @@ def toggle_enabled():
 
 @app.route('/api/reset_state', methods=['POST'])
 def reset_state():
-    global ROBOT_STATE
-    ROBOT_STATE = "SEEKING_GREEN"
-    return jsonify({"state": ROBOT_STATE})
+    global ROBOT_STATE, CARRYING_COLOR
+    ROBOT_STATE = "SEEKING_TARGET"
+    CARRYING_COLOR = None
+    return jsonify({"state": ROBOT_STATE, "carrying_color": None})
 
 @app.route('/api/emergency_stop', methods=['POST'])
 def emergency_stop():
     send_robot_command("STOP", force=True)
     return jsonify({"success": True})
+
+@app.route('/api/update_bin', methods=['POST'])
+def update_bin():
+    """Cập nhật vị trí BIN từ tọa độ rectangle do user vẽ trên video.
+    
+    Request JSON:
+        bin_type: "green" hoặc "yellow" - loại BIN cần cập nhật
+        x1, y1, x2, y2: Tọa độ góc trên-trái và góc dưới-phải của rectangle
+    
+    Response:
+        bin_pos: (cx, cy) - tâm của rectangle
+        bin_margin: radius - bán kính = max(width, height) / 2
+    """
+    global GREEN_BIN_POS, GREEN_BIN_MARGIN, YELLOW_BIN_POS, YELLOW_BIN_MARGIN
+    
+    data = request.json
+    if not data:
+        return jsonify({"success": False, "error": "No data provided"}), 400
+    
+    bin_type = data.get('bin_type', 'green').lower()
+    if bin_type not in ('green', 'yellow'):
+        return jsonify({"success": False, "error": "bin_type must be 'green' or 'yellow'"}), 400
+    
+    x1 = int(data.get('x1', 0))
+    y1 = int(data.get('y1', 0))
+    x2 = int(data.get('x2', 0))
+    y2 = int(data.get('y2', 0))
+    
+    # Đảm bảo x1 < x2, y1 < y2
+    if x1 > x2:
+        x1, x2 = x2, x1
+    if y1 > y2:
+        y1, y2 = y2, y1
+    
+    # Kiểm tra kích thước tối thiểu
+    width = x2 - x1
+    height = y2 - y1
+    if width < 10 or height < 10:
+        return jsonify({"success": False, "error": "Rectangle too small (min 10x10)"}), 400
+    
+    # Tính tâm và bán kính
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+    margin = max(width, height) // 2
+    
+    # Cập nhật BIN tương ứng
+    if bin_type == "green":
+        GREEN_BIN_POS = (cx, cy)
+        GREEN_BIN_MARGIN = margin
+        print(f"[GREEN BIN] Updated: pos={GREEN_BIN_POS}, margin={GREEN_BIN_MARGIN}")
+    else:
+        YELLOW_BIN_POS = (cx, cy)
+        YELLOW_BIN_MARGIN = margin
+        print(f"[YELLOW BIN] Updated: pos={YELLOW_BIN_POS}, margin={YELLOW_BIN_MARGIN}")
+    
+    # Lưu config
+    save_all_config()
+    
+    return jsonify({
+        "success": True,
+        "bin_type": bin_type,
+        "bin_pos": (cx, cy),
+        "bin_margin": margin,
+        "rect": {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+    })
+
+@app.route('/api/clear_bin', methods=['POST'])
+def clear_bin():
+    """Xóa vị trí BIN đã lưu.
+    
+    Request JSON:
+        bin_type: "green", "yellow", hoặc "all" - loại BIN cần xóa
+    """
+    global GREEN_BIN_POS, GREEN_BIN_MARGIN, YELLOW_BIN_POS, YELLOW_BIN_MARGIN
+    
+    data = request.json or {}
+    bin_type = data.get('bin_type', 'all').lower()
+    
+    if bin_type in ('green', 'all'):
+        GREEN_BIN_POS = None
+        GREEN_BIN_MARGIN = 100
+        print("[GREEN BIN] Cleared")
+    
+    if bin_type in ('yellow', 'all'):
+        YELLOW_BIN_POS = None
+        YELLOW_BIN_MARGIN = 100
+        print("[YELLOW BIN] Cleared")
+    
+    save_all_config()
+    
+    return jsonify({
+        "success": True,
+        "cleared": bin_type,
+        "green_bin_pos": GREEN_BIN_POS,
+        "yellow_bin_pos": YELLOW_BIN_POS
+    })
 
 @app.route('/api/manual_command', methods=['POST'])
 def manual_command():
@@ -1008,16 +1282,18 @@ def manual_command():
 
 @app.route('/api/set_container', methods=['POST'])
 def set_container():
-    global CONTAINER_POS
+    """Deprecated: Use /api/update_bin with bin_type instead."""
+    global GREEN_BIN_POS
     data = request.json
-    x = data.get('x', CONTAINER_POS[0])
-    y = data.get('y', CONTAINER_POS[1])
-    CONTAINER_POS = (int(x), int(y))
-    return jsonify({"container_pos": CONTAINER_POS})
+    x = data.get('x', 200)
+    y = data.get('y', 360)
+    GREEN_BIN_POS = (int(x), int(y))
+    return jsonify({"container_pos": GREEN_BIN_POS})
 
 @app.route('/api/config', methods=['GET', 'POST'])
 def config():
-    global ROBOT_IP, ROBOT_PW, CONTAINER_POS, CONTAINER_MARGIN, MARKER_MIN_DIST, MARKER_MAX_DIST, PICKUP_DISTANCE, PICKUP_RANGE
+    global ROBOT_IP, ROBOT_PW, GREEN_BIN_POS, GREEN_BIN_MARGIN, YELLOW_BIN_POS, YELLOW_BIN_MARGIN
+    global MARKER_MIN_DIST, MARKER_MAX_DIST, PICKUP_DISTANCE, PICKUP_RANGE, DROP_DISTANCE, DROP_ANGLE
     
     if request.method == 'POST':
         data = request.json
@@ -1025,10 +1301,20 @@ def config():
             ROBOT_IP = data['robot_ip']
         if 'robot_pw' in data:
             ROBOT_PW = data['robot_pw']
-        if 'container_x' in data and 'container_y' in data:
-            CONTAINER_POS = (int(data['container_x']), int(data['container_y']))
-        if 'container_margin' in data:
-            CONTAINER_MARGIN = int(data['container_margin'])
+        
+        # Green BIN config
+        if 'green_bin_x' in data and 'green_bin_y' in data:
+            GREEN_BIN_POS = (int(data['green_bin_x']), int(data['green_bin_y']))
+        if 'green_bin_margin' in data:
+            GREEN_BIN_MARGIN = int(data['green_bin_margin'])
+        
+        # Yellow BIN config
+        if 'yellow_bin_x' in data and 'yellow_bin_y' in data:
+            YELLOW_BIN_POS = (int(data['yellow_bin_x']), int(data['yellow_bin_y']))
+        if 'yellow_bin_margin' in data:
+            YELLOW_BIN_MARGIN = int(data['yellow_bin_margin'])
+        
+        # Marker distance config
         if 'marker_min_dist' in data:
             MARKER_MIN_DIST = int(data['marker_min_dist'])
         if 'marker_max_dist' in data:
@@ -1037,6 +1323,10 @@ def config():
             PICKUP_DISTANCE = int(data['pickup_distance'])
         if 'pickup_range' in data:
             PICKUP_RANGE = int(data['pickup_range'])
+        if 'drop_distance' in data:
+            DROP_DISTANCE = int(data['drop_distance'])
+        if 'drop_angle' in data:
+            DROP_ANGLE = int(data['drop_angle'])
         
         # Lưu config vào file
         save_all_config()
@@ -1044,12 +1334,16 @@ def config():
     return jsonify({
         "robot_ip": ROBOT_IP,
         "robot_pw": ROBOT_PW,
-        "container_pos": CONTAINER_POS,
-        "container_margin": CONTAINER_MARGIN,
+        "green_bin_pos": GREEN_BIN_POS,
+        "green_bin_margin": GREEN_BIN_MARGIN,
+        "yellow_bin_pos": YELLOW_BIN_POS,
+        "yellow_bin_margin": YELLOW_BIN_MARGIN,
         "marker_min_dist": MARKER_MIN_DIST,
         "marker_max_dist": MARKER_MAX_DIST,
         "pickup_distance": PICKUP_DISTANCE,
         "pickup_range": PICKUP_RANGE,
+        "drop_distance": DROP_DISTANCE,
+        "drop_angle": DROP_ANGLE,
     })
 
 # ================== COLOR CONFIG API ==================
@@ -1065,7 +1359,7 @@ def get_colors():
 @app.route('/api/colors/<color_name>', methods=['POST'])
 def set_color(color_name):
     """Cập nhật một màu."""
-    if color_name not in ["red", "green", "blue"]:
+    if color_name not in ["red", "green", "blue", "yellow"]:
         return jsonify({"error": "Invalid color name"}), 400
     
     data = request.json

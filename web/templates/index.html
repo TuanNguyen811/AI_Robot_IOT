@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robot Control Panel</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            text-align: center;
+            padding: 20px 0;
+            border-bottom: 1px solid #333;
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            font-size: 2rem;
+            color: #00d4ff;
+            text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
+        }
+        
+        .main-content {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+        }
+        
+        @media (max-width: 1024px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .video-section {
+            background: #0f0f23;
+            border-radius: 15px;
+            padding: 15px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+        
+        .video-container {
+            position: relative;
+            width: 100%;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        
+        .video-container img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        
+        .control-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        .panel {
+            background: #0f0f23;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+        
+        .panel h2 {
+            font-size: 1.1rem;
+            color: #00d4ff;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #333;
+        }
+        
+        /* Status Panel */
+        .status-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        
+        .status-item {
+            background: #1a1a3e;
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .status-item label {
+            font-size: 0.75rem;
+            color: #888;
+            display: block;
+            margin-bottom: 5px;
+        }
+        
+        .status-item .value {
+            font-size: 1rem;
+            font-weight: bold;
+        }
+        
+        .status-item .value.on { color: #00ff88; }
+        .status-item .value.off { color: #ff4444; }
+        .status-item .value.warning { color: #ffaa00; }
+        
+        /* Movement Controls */
+        .movement-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            max-width: 250px;
+            margin: 0 auto;
+        }
+        
+        .btn {
+            padding: 15px 10px;
+            border: none;
+            border-radius: 10px;
+            font-size: 0.85rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+        }
+        
+        .btn:hover {
+            transform: scale(1.05);
+        }
+        
+        .btn:active {
+            transform: scale(0.95);
+        }
+        
+        .btn-move {
+            background: linear-gradient(145deg, #2d2d5a, #1a1a3e);
+            color: #fff;
+            border: 1px solid #444;
+        }
+        
+        .btn-move:hover {
+            background: linear-gradient(145deg, #3d3d7a, #2a2a4e);
+            border-color: #00d4ff;
+        }
+        
+        .btn-action {
+            background: linear-gradient(145deg, #1a3a1a, #0a2a0a);
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+        
+        .btn-danger {
+            background: linear-gradient(145deg, #4a1a1a, #2a0a0a);
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+        
+        .btn-warning {
+            background: linear-gradient(145deg, #4a3a1a, #2a2a0a);
+            color: #ffaa00;
+            border: 1px solid #ffaa00;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(145deg, #1a3a4a, #0a2a3a);
+            color: #00d4ff;
+            border: 1px solid #00d4ff;
+        }
+        
+        .btn-full {
+            width: 100%;
+            margin-top: 10px;
+        }
+        
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        
+        .btn-group .btn {
+            flex: 1;
+        }
+        
+        /* Action Buttons */
+        .action-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        
+        /* Config Panel */
+        .config-form {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .form-group label {
+            font-size: 0.8rem;
+            color: #888;
+        }
+        
+        .form-group input {
+            padding: 10px;
+            border: 1px solid #333;
+            border-radius: 8px;
+            background: #1a1a3e;
+            color: #fff;
+            font-size: 0.9rem;
+        }
+        
+        .form-group input:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        
+        /* State indicator */
+        .state-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 15px;
+            background: #1a1a3e;
+            border-radius: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .state-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        .state-dot.seeking { background: #00d4ff; }
+        .state-dot.picking { background: #00ff88; }
+        .state-dot.returning { background: #ffaa00; }
+        .state-dot.dropping { background: #ff44ff; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .state-text {
+            font-size: 1rem;
+            font-weight: bold;
+        }
+        
+        /* Empty placeholder for grid */
+        .empty {
+            visibility: hidden;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🤖 Robot Control Panel</h1>
+        </header>
+        
+        <div class="main-content">
+            <div class="video-section">
+                <div class="video-container">
+                    <img id="video-stream" src="/video_feed" alt="Video Stream">
+                </div>
+            </div>
+            
+            <div class="control-panel">
+                <!-- Status Panel -->
+                <div class="panel">
+                    <h2>📊 Trạng thái</h2>
+                    <div class="state-indicator">
+                        <div class="state-dot" id="state-dot"></div>
+                        <span class="state-text" id="state-text">SEEKING_GREEN</span>
+                    </div>
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <label>Gửi lệnh</label>
+                            <span class="value" id="status-enabled">--</span>
+                        </div>
+                        <div class="status-item">
+                            <label>Lệnh hiện tại</label>
+                            <span class="value" id="status-command">--</span>
+                        </div>
+                        <div class="status-item">
+                            <label>Markers</label>
+                            <span class="value" id="status-markers">--</span>
+                        </div>
+                        <div class="status-item">
+                            <label>Green</label>
+                            <span class="value" id="status-green">--</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Quick Actions -->
+                <div class="panel">
+                    <h2>⚡ Thao tác nhanh</h2>
+                    <div class="action-grid">
+                        <button class="btn btn-danger" onclick="emergencyStop()">🛑 DỪNG KHẨN</button>
+                        <button class="btn btn-warning" onclick="resetState()">🔄 RESET</button>
+                        <button class="btn btn-primary" onclick="toggleEnabled()">📡 BẬT/TẮT</button>
+                        <button class="btn btn-action" onclick="sendCommand('COMBO_PICK')">✊ PICK</button>
+                    </div>
+                    <button class="btn btn-action btn-full" onclick="sendCommand('COMBO_DROP')">✋ DROP</button>
+                </div>
+                
+                <!-- Manual Control -->
+                <div class="panel">
+                    <h2>🎮 Điều khiển thủ công</h2>
+                    <div class="movement-grid">
+                        <div class="empty"></div>
+                        <button class="btn btn-move" onmousedown="sendCommand('MOVE_FORWARD')" onmouseup="sendCommand('STOP')">⬆️ Tiến</button>
+                        <div class="empty"></div>
+                        
+                        <button class="btn btn-move" onmousedown="sendCommand('SPIN_LEFT')" onmouseup="sendCommand('STOP')">↺ Quay</button>
+                        <button class="btn btn-danger" onclick="sendCommand('STOP')">⏹️ Dừng</button>
+                        <button class="btn btn-move" onmousedown="sendCommand('SPIN_RIGHT')" onmouseup="sendCommand('STOP')">↻ Quay</button>
+                        
+                        <button class="btn btn-move" onmousedown="sendCommand('TURN_LEFT')" onmouseup="sendCommand('STOP')">⬅️ Trái</button>
+                        <button class="btn btn-move" onmousedown="sendCommand('MOVE_FORWARD')" onmouseup="sendCommand('STOP')" style="transform: rotate(180deg)">⬆️</button>
+                        <button class="btn btn-move" onmousedown="sendCommand('TURN_RIGHT')" onmouseup="sendCommand('STOP')">➡️ Phải</button>
+                    </div>
+                </div>
+                
+                <!-- Config -->
+                <div class="panel">
+                    <h2>⚙️ Cấu hình</h2>
+                    <div class="config-form">
+                        <div class="form-group">
+                            <label>Robot IP</label>
+                            <input type="text" id="config-ip" placeholder="192.168.1.23">
+                        </div>
+                        <div class="form-group">
+                            <label>Mật khẩu</label>
+                            <input type="text" id="config-pw" placeholder="5613">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Container X</label>
+                                <input type="number" id="config-cx" placeholder="1180">
+                            </div>
+                            <div class="form-group">
+                                <label>Container Y</label>
+                                <input type="number" id="config-cy" placeholder="360">
+                            </div>
+                        </div>
+                        <button class="btn btn-primary btn-full" onclick="saveConfig()">💾 Lưu cấu hình</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Update status every 500ms
+        function updateStatus() {
+            fetch('/api/status')
+                .then(res => res.json())
+                .then(data => {
+                    // State
+                    document.getElementById('state-text').textContent = data.state;
+                    const stateDot = document.getElementById('state-dot');
+                    stateDot.className = 'state-dot ' + data.state.toLowerCase().replace('_', '-');
+                    
+                    // Enabled
+                    const enabledEl = document.getElementById('status-enabled');
+                    enabledEl.textContent = data.robot_enabled ? 'BẬT' : 'TẮT';
+                    enabledEl.className = 'value ' + (data.robot_enabled ? 'on' : 'off');
+                    
+                    // Command
+                    document.getElementById('status-command').textContent = data.command;
+                    
+                    // Markers
+                    const markersEl = document.getElementById('status-markers');
+                    markersEl.textContent = data.markers_ok ? 'OK' : 'MISSING';
+                    markersEl.className = 'value ' + (data.markers_ok ? 'on' : 'off');
+                    
+                    // Green
+                    const greenEl = document.getElementById('status-green');
+                    greenEl.textContent = data.green_detected ? 'FOUND' : 'NONE';
+                    greenEl.className = 'value ' + (data.green_detected ? 'on' : 'warning');
+                })
+                .catch(err => console.error('Status error:', err));
+        }
+        
+        function emergencyStop() {
+            fetch('/api/emergency_stop', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => console.log('Emergency stop:', data));
+        }
+        
+        function resetState() {
+            fetch('/api/reset_state', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => console.log('Reset:', data));
+        }
+        
+        function toggleEnabled() {
+            fetch('/api/toggle_enabled', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => console.log('Toggle:', data));
+        }
+        
+        function sendCommand(cmd) {
+            fetch('/api/manual_command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: cmd })
+            })
+            .then(res => res.json())
+            .then(data => console.log('Command:', data));
+        }
+        
+        function loadConfig() {
+            fetch('/api/config')
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('config-ip').value = data.robot_ip;
+                    document.getElementById('config-pw').value = data.robot_pw;
+                    document.getElementById('config-cx').value = data.container_pos[0];
+                    document.getElementById('config-cy').value = data.container_pos[1];
+                });
+        }
+        
+        function saveConfig() {
+            const config = {
+                robot_ip: document.getElementById('config-ip').value,
+                robot_pw: document.getElementById('config-pw').value,
+                container_x: parseInt(document.getElementById('config-cx').value),
+                container_y: parseInt(document.getElementById('config-cy').value),
+            };
+            
+            fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config)
+            })
+            .then(res => res.json())
+            .then(data => {
+                alert('Đã lưu cấu hình!');
+                console.log('Config saved:', data);
+            });
+        }
+        
+        // Init
+        loadConfig();
+        setInterval(updateStatus, 500);
+    </script>
+</body>
+</html>
