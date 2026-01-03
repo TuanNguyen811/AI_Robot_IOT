@@ -281,7 +281,7 @@ python yolo_robot.py
 
 ## 🎥 Demo
 
-[Video Demo](data/demo.mp4)
+[Video Demo](robot/demo (2).mp4)
 
 ---
 
